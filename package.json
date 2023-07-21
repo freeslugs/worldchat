@@ -1,0 +1,20 @@
+{
+  "name": "xmtpizza",
+  "version": "0.0.1",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@xmtp/xmtp-js": "^10.0.0",
+    "dotenv": "^16.3.1",
+    "ethers": "^6.6.4",
+    "node-telegram-bot-api": "^0.61.0"
+  },
+  "devDependencies": {
+    "@flydotio/dockerfile": "^0.3.3"
+  }
+}
