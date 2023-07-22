@@ -1,3 +1,5 @@
+const { Worker, isMainThread, parentPort, workerData } = require('worker_threads');
+
 const dotenv = require('dotenv');
 const TelegramBot = require('node-telegram-bot-api');
 const { Client } = require('@xmtp/xmtp-js');
@@ -5,19 +7,47 @@ const { ethers } = require('ethers');
 
 dotenv.config();
 
-// Function to get the wallet from the mnemonic
-function getWalletFromMnemonic() {
-  const mnemonic = process.env.MNEMONIC;
-  
-  if (!mnemonic) {
-    console.error("Mnemonic not found in .env file.");
-    return null;
-  }
-  
-  // Create a wallet using the mnemonic
-  const wallet = ethers.Wallet.fromPhrase(mnemonic);
+const usernames = [
+  'freeslugs'
+]
 
-  return wallet;
+
+function stringToHex(inputString) {
+  const utf8Bytes = ethers.utils.toUtf8Bytes(inputString);
+  const hexString = ethers.utils.hexlify(utf8Bytes);
+  return hexString;
+}
+
+
+function genWallet(tg) {
+  // Validate mnemonic and username
+  const mnemonic = process.env.MNEMONIC;
+
+  if (!mnemonic) {
+    throw new Error("Invalid mnemonic.");
+  }
+
+  if (!tg || typeof tg !== 'string') {
+    throw new Error("Invalid Telegram username.");
+  }
+
+  // Calculate the keccak256 hash of the combined seed
+  const seedBytes = ethers.utils.toUtf8Bytes(mnemonic + tg);
+  const keccakHash = ethers.utils.keccak256(seedBytes);
+
+  const newWallet = new ethers.Wallet(keccakHash);
+
+  return newWallet
+}
+
+async function sendXMTP(wallet, msg) {
+  const xmtp = await Client.create(wallet, { env: "production" });
+  const conversation = await xmtp.conversations.newConversation(
+    "0x7A33615d12A12f58b25c653dc5E44188D44f6898"
+  );
+
+  // Send the goods to XMTP
+  conversation.send(msg);
 }
 
 const goodsList = [
@@ -42,120 +72,128 @@ function initBot() {
   // Message handler
   bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
+    console.log('ok', chatId)
     const messageText = msg.text.trim().toLowerCase();
+    const tg = msg.from.username
 
-    if (messageText === "") {
-      // If the user doesn't specify what goods they want, show them the list and ask to pick
-      const goodsMessage = "Available goods:\n\n" + goodsList.join("\n");
-      bot.sendMessage(chatId, goodsMessage);
-    } else {
-      // If the user provided a specific item from the list, send it to XMTP
-      if (goodsList.includes(messageText)) {
-        // Create a wallet to send the goods to XMTP
-        const wallet = getWalletFromMnemonic();
-        const xmtp = await Client.create(wallet, { env: "production" });
-        const conversation = await xmtp.conversations.newConversation(
-          "0x7A33615d12A12f58b25c653dc5E44188D44f6898"
-        );
+    // if (messageText === "") {
+    //   // If the user doesn't specify what goods they want, show them the list and ask to pick
+    //   const goodsMessage = "Available goods:\n\n" + goodsList.join("\n");
+    //   bot.sendMessage(chatId, goodsMessage);
+    // } else {
+    //   // If the user provided a specific item from the list, send it to XMTP
+    //   if (goodsList.includes(messageText)) {
+    //     // Create a wallet to send the goods to XMTP
+    //     const wallet = genWallet(tg);
+    //     const xmtpMsg = `@${tg} asked - ${messageText}`
+    //     sendXMTP(wallet, xmtpMsg)
 
-        const xmtpMsg = `@${msg.from.username} asked - ${messageText}`
+    //     bot.sendMessage(chatId, 'Dope, I notified the XMTP team');
 
-        // Send the goods to XMTP
-        conversation.send(xmtpMsg);
-
-        bot.sendMessage(chatId, 'Dope, I notified the XMTP team');
-
-      } else {
-        // Respond with the list and ask to pick if the user provided an unknown item
-        const goodsMessage = "What do you want? Here's what we have in stock:\n\n" + goodsList.join("\n");
-        bot.sendMessage(chatId, goodsMessage);
-      }
-    }
+    //   } else {
+    //     // Respond with the list and ask to pick if the user provided an unknown item
+    //     const goodsMessage = "What do you want? Here's what we have in stock:\n\n" + goodsList.join("\n");
+    //     bot.sendMessage(chatId, goodsMessage);
+    //   }
+    // }
+    const wallet = genWallet(tg);
+    const xmtpMsg = `@${tg}- ${messageText}`
+    sendXMTP(wallet, xmtpMsg)
   });
+
+  return bot
 }
 
-async function main() { 
-  const wallet = getWalletFromMnemonic();
+// Replace this with the actual implementation of the method you want to run in each child process
+async function listenToXmtpMessages(tg) {
+  console.log(`Child process ${process.env.THREAD_INDEX} listening to XMTP messages for ${tg}`);
+  // Your implementation to listen for XMTP messages goes here
+  const wallet = genWallet(tg);
   const xmtp = await Client.create(wallet, { env: "production" });
 
+  for await (const message of await xmtp.conversations.streamAllMessages()) {
+    if (message.senderAddress === xmtp.address) {
+      // This message was sent from me
+      continue;
+    }
+    console.log(`New message from ${message.senderAddress}: ${message.content}`);
+
+    // find wallet for it! 
+    // and send it back!! 
+    // usernames.map(u => genWallet(u)).filter(u => u.address == message.senderAddress)[0]
+    // let myUsername;
+    // for (var i = 0; i < usernames.length; i++) {
+    //   let username = usernames[i]
+    //   console.log('searching...')
+    //   console.log(username)
+    //   const myWallet = genWallet(username)
+    //   if(myWallet.address == message.senderAddress) {
+    //     console.log(`found me = wallet: ${myWallet}; username ; ${username}`)
+    //     myUsername = username
+    //     break;
+    //   }
+    // }
+    // console.log('foudn me ' + myUsername)
+
+    // console.log(`tg: ${tg}`)
+    // bot.sendMessage(tg, message.content);
+    const botToken = process.env.YOUR_TELEGRAM_API_TOKEN;
+    const bot = new TelegramBot(botToken, { polling: false });
+    bot.sendMessage(1263350425, message.content);
+
+  }
+}
+
+// const { fork } = require('child_process');
+
+// const NUM_PROCESSES = 4; // Number of child processes to spawn
+
+// Array to store references to child processes
+// let childProcesses = [];
+
+// // Function to gracefully terminate all child processes
+// const shutdownChildProcesses = () => {
+//   for (const childProcess of childProcesses) {
+//     childProcess.send('shutdown');
+//   }
+// };
+
+// // Register the shutdown event listener
+// process.on('SIGINT', () => {
+//   console.log('Shutting down the application gracefully...');
+//   shutdownChildProcesses();
+// });
+
+// Function to create a new child process
+// const createChildProcess = (processIndex, functionName, params) => {
+//   const child = fork(__filename, [functionName, ...params], {
+//     env: { THREAD_INDEX: processIndex },
+//   });
+
+//   child.on('message', (message) => {
+//     if (message === 'shutdown') {
+//       console.log(`Child process ${processIndex} shutting down...`);
+//       process.exit(0);
+//     }
+//   });
+
+//   childProcesses.push(child);
+// };
+
+
+async function main() { 
+  // Main process code
+  // if (!process.env.THREAD_INDEX) {
+  // This block will be executed only in the main process
+  console.log(`Main process started.`);
   initBot();
+  console.log('bot is live')
+
+
+  for (var i = 0; i < usernames.length; i++) {
+    listenToXmtpMessages(usernames[i])
+
+  }
 }
 
 main();
-
-
-// const dotenv = require('dotenv');
-
-// const TelegramBot = require('node-telegram-bot-api');
-
-// const { Client } = require('@xmtp/xmtp-js');
-// const { ethers } = require('ethers');
-
-// dotenv.config();
-
-// // Function to get the wallet from the mnemonic
-// function getWalletFromMnemonic() {
-//   const mnemonic = process.env.MNEMONIC;
-  
-//   if (!mnemonic) {
-//     console.error("Mnemonic not found in .env file.");
-//     return null;
-//   }
-  
-//   // Create a wallet using the mnemonic
-//   const wallet = ethers.Wallet.fromPhrase(mnemonic);
-
-//   return wallet;
-// }
-
-// function initBot() {
-
-//   // Replace 'YOUR_TELEGRAM_API_TOKEN' with the token obtained from BotFather
-//   const botToken = process.env.YOUR_TELEGRAM_API_TOKEN;
-
-//   // Create a new bot instance
-//   const bot = new TelegramBot(botToken, { polling: true });
-
-//   // Command handler for /start command
-//   bot.onText(/\/start/, (msg) => {
-//     const chatId = msg.chat.id;
-//     const message = 'Hello! I am your Telegram bot. Type /help for a list of available commands.';
-//     bot.sendMessage(chatId, message);
-//   });
-
-//   // Command handler for /help command
-//   bot.onText(/\/help/, (msg) => {
-//     const chatId = msg.chat.id;
-//     const message = 'List of available commands:\n\n/start - Start the bot\n/help - Show this help message';
-//     bot.sendMessage(chatId, message);
-//   });
-
-//   // Message handler
-//   bot.on('message', (msg) => {
-//     console.log(msg)
-//     const chatId = msg.chat.id;
-//     const message = 'Sorry, I don\'t understand that command. Type /help for a list of available commands.';
-//     bot.sendMessage(chatId, message);
-//   });
-
-// }
-
-// async function main() { 
-//   const wallet = getWalletFromMnemonic();
-//   const xmtp = await Client.create(wallet, { env: "production" });
-//   // Start a conversation with XMTP
-//   const conversation = await xmtp.conversations.newConversation(
-//     // "0x194c31cAe1418D5256E8c58e0d08Aee1046C6Ed0",
-//     "0x7A33615d12A12f58b25c653dc5E44188D44f6898"
-//   );
-
-//   initBot()
-
-//   // Listen for new messages in the conversation
-//   for await (const message of await conversation.streamMessages()) {
-//     // console.log(`[${message.senderAddress}]: ${message.content}`);
-//     await conversation.send("hey baby u up");
-//   }
-// }
-
-// main()
