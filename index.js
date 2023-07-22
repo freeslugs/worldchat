@@ -1,3 +1,7 @@
+const PushAPI = require('@pushprotocol/restapi');
+
+const axios = require('axios');
+
 const dotenv = require('dotenv');
 const TelegramBot = require('node-telegram-bot-api');
 const { Client } = require('@xmtp/xmtp-js');
@@ -11,6 +15,52 @@ const connectionString = process.env.DATABASE_URL;
 const sequelize = new Sequelize(connectionString, {
   dialect: 'postgres',
 });
+
+async function getWalletAddress(identity) {
+  try {
+    const apiUrl = 'https://api.airstack.xyz/gql';
+
+    const query = `
+      query MyQuery($identity: Identity!, $blockchain: TokenBlockchain!) {
+        Wallet(input: { identity: $identity, blockchain: $blockchain }) {
+          addresses
+        }
+      }
+    `;
+
+    // Set the variables for the query
+    const variables = {
+      identity: identity,
+      blockchain: 'ethereum',
+    };
+
+    // Set the headers with the "Authorization" header
+    const headers = {
+      'Authorization': process.env.AIRSTACK_API_KEY,
+    };
+
+    // Send the POST request to the GraphQL API with headers
+    const response = await axios.post(apiUrl, {
+      query: query,
+      variables: variables,
+    }, {
+      headers: headers,
+    });
+
+    // Extract the result from the response
+    const result = response.data.data;
+
+    if(result && result.Wallet && result.Wallet.addresses) {
+      return result.Wallet.addresses[0]  
+    } else {
+      return null
+    }
+    
+  } catch (error) {
+    console.error('Error fetching data:', error.message);
+    throw error;
+  }
+}
 
 const TelegramUser = sequelize.define('telegram_user', {
   username: {
@@ -35,17 +85,6 @@ async function createTable() {
     console.error('Error creating table:', error);
   }
 }
-
-// function sendPhoto(chatId, photoPath, caption) {
-//   bot.sendPhoto(chatId, photoPath, { caption: caption })
-//     .then(() => {
-//       console.log('Photo sent successfully.');
-//     })
-//     .catch((error) => {
-//       console.error('Error sending photo:', error.message);
-//     });
-// }
-
 
 async function getTelegramUsernames() {
   try {
@@ -90,16 +129,53 @@ function genWallet(tg) {
   return newWallet
 }
 
-async function sendXMTP(wallet, msg) {
-  const xmtp = await Client.create(wallet, { env: "production" });
-  const conversation = await xmtp.conversations.newConversation(
-    // "0x7A33615d12A12f58b25c653dc5E44188D44f6898" // freeslugs
-    '0x194c31cAe1418D5256E8c58e0d08Aee1046C6Ed0' // prod xmtp wallet 
-  );
-
-  conversation.send(msg);
+async function sendXMTP(from, to, msg) {
+  
+  try {
+    const xmtp = await Client.create(from, { env: "production" });
+    const conversation = await xmtp.conversations.newConversation(to);
+    conversation.send(msg);
+  } catch(e) {
+    console.log('error in xmtp')
+    return e.message
+  }
+  
 }
 
+async function sendPush(signer, to, msg) {
+  let user 
+
+  try {
+    user = await PushAPI.user.create({
+      signer: signer, 
+      env: 'prod'
+    })
+  } catch(e) {
+    user = await PushAPI.user.get({
+      env: 'prod',
+      account: signer.address // 0x7A33615d12A12f58b25c653dc5E44188D44f6898
+    });
+  }
+
+  // console.log(user)
+
+  // need to decrypt the encryptedPvtKey to pass in the api using helper function
+  const pgpDecryptedPvtKey = await PushAPI.chat.decryptPGPKey({
+    encryptedPGPPrivateKey: user.encryptedPrivateKey, 
+    signer: signer
+  });
+
+  // console.log('eip155:' + to)
+
+  // actual api
+  const response = await PushAPI.chat.send({
+    messageContent: msg,
+    messageType: 'Text',
+    receiverAddress: 'eip155:' + to,
+    signer: signer,
+    pgpPrivateKey: pgpDecryptedPvtKey
+  });
+}
 
 async function getChatIdByUsername(username) {
   try {
@@ -120,6 +196,18 @@ async function getChatIdByUsername(username) {
     return null;
   } 
 }
+function parseEthAddressFromString(inputString) {
+  const ethAddressRegex = /(0x)?[0-9a-fA-F]{40}/;
+  const match = inputString.match(ethAddressRegex);
+
+  if (match) {
+    return match[0];
+  } else {
+    return null; // or you can return an error message, throw an exception, etc.
+  }
+}
+
+const isEthereumAddress = (address) => /^0x[a-fA-F0-9]{40}$/.test(address);
 
 function initBot() {
   const botToken = process.env.YOUR_TELEGRAM_API_TOKEN;
@@ -131,43 +219,85 @@ function initBot() {
     const chatId = msg.chat.id;
     const username = msg.from.username;
 
-    const welcomeMessage = `Welcome to xmtpizza, @${username}! XMTP folks will deliver you goods, what do you want? toothpaste, toothbrush, tic tacs, hollywood gum, deodorant, carambar, potato chips, xmtp swag, red bull.`
+    const welcomeMessage = `Welcome to World Chat, @${username}! type an ens or Address + your msg, and we'll send it to them .`
 
     bot.sendMessage(chatId, welcomeMessage);
   });
 
 
   // Message handler
-  bot.on('message', async (msg) => {
+  bot.on('message', async (msg) => {  
     const chatId = msg.chat.id;
-    const messageText = msg.text ? msg.text.trim().toLowerCase() : ''; // Ensure messageText is not null
-    const tg = msg.from.username
-    const wallet = genWallet(tg);
 
-    if (messageText === '/start') {
-      // Handle the "/start" command separately if needed
-      return; // Exit the callback early
+    try {  
+      let messageText = msg.text ? msg.text.trim().toLowerCase() : ''; // Ensure messageText is not null
+      const tg = msg.from.username
+      const wallet = genWallet(tg);
+
+      if (messageText === '/start') {
+        // Handle the "/start" command separately if needed
+        return; // Exit the callback early
+      }
+
+      // Find or create the user based on the chat ID
+      const [user, created] = await TelegramUser.findOrCreate({
+        where: {
+          chat_id: chatId,
+        },
+        defaults: {
+          username: tg,
+          wallet_address: wallet.address
+        },
+      });
+
+      if(created) {
+        console.log('\n\n\ncreated!!! new user\n\n ')
+        await spinUpXmtp(tg)
+        listenToXmtpMessages(tg)
+      }
+
+      const regex = /(0x[a-fA-F0-9]{40})|([a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)*\.eth)/g;
+
+
+      const results = messageText.match(regex);
+      console.log(results);
+      if(!results) {
+        bot.sendMessage(chatId, 'Please provide ENS or Address in your msg');
+        return false;
+      }
+
+      let address = results[0]
+      messageText = messageText.replace(address, '');
+
+      if (!isEthereumAddress(address)) {
+        console.log(`lookin up addr for ${address}`)
+        address = await getWalletAddress(address)
+        // no ENS found 
+        if(!address) {  
+          bot.sendMessage(chatId, 'Invalid ENS');
+          return false;
+        }
+      }
+      address = ethers.utils.getAddress(address)
+
+      console.log(`
+        chatId: ${chatId}
+        tg: ${tg}
+        Wallet: ${wallet.address}
+        address: ${address}
+        message: ${messageText}
+      `)
+
+      sendPush(wallet, address, messageText)
+      var error = await sendXMTP(wallet, address, messageText)
+      if(error){
+        throw(error)
+      }
+      
+    } catch(e ) {
+      console.log(e)
+      bot.sendMessage(chatId, e);
     }
-
-    // Find or create the user based on the chat ID
-    const [user, created] = await TelegramUser.findOrCreate({
-      where: {
-        chat_id: chatId,
-      },
-      defaults: {
-        username: tg,
-        wallet_address: wallet.address
-      },
-    });
-
-    if(created) {
-      await spinUpXmtp(tg)
-      listenToXmtpMessages(tg)
-    }
-
-    // const xmtpMsg = `@${tg}- ${messageText}`
-    console.log(`chatId : ${chatId}, msg text:  ${messageText}, `)
-    sendXMTP(wallet, messageText)
   });
 
   return bot
@@ -185,6 +315,7 @@ async function spinUpXmtp(tg) {
 }
 
 async function listenToXmtpMessages(tg) {
+  console.log(`listening to xmtp msgs for ${tg}...`)
   const chatId = await getChatIdByUsername(tg)
   const wallet = genWallet(tg);
   const xmtp = await Client.create(wallet, { env: "production" });
@@ -194,12 +325,19 @@ async function listenToXmtpMessages(tg) {
       // This message was sent from me
       continue;
     }
-    console.log(`New message from ${message.senderAddress}: ${message.content}`);
+
+    console.log(`
+      XTMP => 
+      message.senderAddress: ${message.senderAddress}      
+      xmtp.address : ${xmtp.address}
+      message.content: ${message.content}
+    `)
+
 
     const botToken = process.env.YOUR_TELEGRAM_API_TOKEN;
     const bot = new TelegramBot(botToken, { polling: false });
 
-    console.log(`chatId: ${chatId}; msg: ${message.content}`)
+    // console.log(`chatId: ${chatId}; msg: ${message.content}`)
     bot.sendMessage(chatId, message.content);
 
   }
@@ -208,7 +346,7 @@ async function listenToXmtpMessages(tg) {
 async function main() { 
   await createTable();
   // Main process code
-  console.log(`Main process started.`);
+  console.log(`YOLO! Main process started.`);
   initBot();
   console.log('bot is live')
 

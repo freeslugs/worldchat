@@ -2,7 +2,7 @@
   "name": "xmtpizza",
   "version": "0.0.1",
   "description": "",
-  "main": "index.js",
+  "main": "worldchat.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
@@ -10,6 +10,7 @@
   "license": "ISC",
   "dependencies": {
     "@pushprotocol/restapi": "^1.4.3",
+    "@pushprotocol/socket": "^0.5.1",
     "@xmtp/xmtp-js": "^10.0.0",
     "axios": "^1.4.0",
     "dotenv": "^16.3.1",

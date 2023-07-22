@@ -16,6 +16,46 @@ const sequelize = new Sequelize(connectionString, {
   dialect: 'postgres',
 });
 
+async function getWalletAddress(identity) {
+  try {
+    const apiUrl = 'https://api.airstack.xyz/gql';
+
+    const query = `
+      query MyQuery($identity: Identity!, $blockchain: TokenBlockchain!) {
+        Wallet(input: { identity: $identity, blockchain: $blockchain }) {
+          addresses
+        }
+      }
+    `;
+
+    // Set the variables for the query
+    const variables = {
+      identity: identity,
+      blockchain: 'ethereum',
+    };
+
+    // Set the headers with the "Authorization" header
+    const headers = {
+      'Authorization': process.env.AIRSTACK_API_KEY,
+    };
+
+    // Send the POST request to the GraphQL API with headers
+    const response = await axios.post(apiUrl, {
+      query: query,
+      variables: variables,
+    }, {
+      headers: headers,
+    });
+
+    // Extract the result from the response
+    const result = response.data.data;
+    return result.Wallet.addresses[0]
+  } catch (error) {
+    console.error('Error fetching data:', error.message);
+    throw error;
+  }
+}
+
 const TelegramUser = sequelize.define('telegram_user', {
   username: {
     type: DataTypes.TEXT,
@@ -84,9 +124,16 @@ function genWallet(tg) {
 }
 
 async function sendXMTP(from, to, msg) {
-  const xmtp = await Client.create(from, { env: "production" });
-  const conversation = await xmtp.conversations.newConversation(to);
-  conversation.send(msg);
+  
+  try {
+    const xmtp = await Client.create(from, { env: "production" });
+    const conversation = await xmtp.conversations.newConversation(to);
+    conversation.send(msg);
+  } catch(e) {
+    console.log('error in xmtp')
+    return e.message
+  }
+  
 }
 
 async function sendPush(signer, to, msg) {
@@ -104,11 +151,15 @@ async function sendPush(signer, to, msg) {
     });
   }
 
+  console.log(user)
+
   // need to decrypt the encryptedPvtKey to pass in the api using helper function
   const pgpDecryptedPvtKey = await PushAPI.chat.decryptPGPKey({
-      encryptedPGPPrivateKey: user.encryptedPrivateKey, 
-      signer: signer
+    encryptedPGPPrivateKey: user.encryptedPrivateKey, 
+    signer: signer
   });
+
+  console.log('eip155:' + to)
 
   // actual api
   const response = await PushAPI.chat.send({
@@ -119,8 +170,6 @@ async function sendPush(signer, to, msg) {
     pgpPrivateKey: pgpDecryptedPvtKey
   });
 }
-
-
 
 async function getChatIdByUsername(username) {
   try {
@@ -152,6 +201,8 @@ function parseEthAddressFromString(inputString) {
   }
 }
 
+const isEthereumAddress = (address) => /^0x[a-fA-F0-9]{40}$/.test(address);
+
 function initBot() {
   const botToken = process.env.YOUR_TELEGRAM_API_TOKEN;
 
@@ -162,17 +213,18 @@ function initBot() {
     const chatId = msg.chat.id;
     const username = msg.from.username;
 
-    const welcomeMessage = `Welcome to xmtpizza, @${username}! XMTP folks will deliver you goods, what do you want? toothpaste, toothbrush, tic tacs, hollywood gum, deodorant, carambar, potato chips, xmtp swag, red bull.`
+    const welcomeMessage = `Welcome to World Chat, @${username}! type an ens or Address + your msg, and we'll send it to them .`
 
     bot.sendMessage(chatId, welcomeMessage);
   });
 
 
   // Message handler
-  bot.on('message', async (msg) => {
-    try {
-      const chatId = msg.chat.id;
-      const messageText = msg.text ? msg.text.trim().toLowerCase() : ''; // Ensure messageText is not null
+  bot.on('message', async (msg) => {  
+    const chatId = msg.chat.id;
+
+    try {  
+      let messageText = msg.text ? msg.text.trim().toLowerCase() : ''; // Ensure messageText is not null
       const tg = msg.from.username
       const wallet = genWallet(tg);
 
@@ -193,26 +245,47 @@ function initBot() {
       });
 
       if(created) {
+        console.log('\n\n\ncreated!!! new user\n\n ')
         await spinUpXmtp(tg)
         listenToXmtpMessages(tg)
       }
 
-      // const xmtpMsg = `@${tg}- ${messageText}`
-      console.log(`chatId : ${chatId}, msg text:  ${messageText}, `)
-      const address = parseEthAddressFromString(messageText);
-      console.log(address)
+      const regex = /(0x[a-fA-F0-9]{40})|([a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)*\.eth)/g;
 
-      if(!address) {
-        bot.sendMessage(chatId, 'Address not found');
+
+      const results = messageText.match(regex);
+      console.log(results);
+      if(!results) {
+        bot.sendMessage(chatId, 'Please provide ENS or Address in your msg');
+        return false;
       }
 
-      // const address = '0x7A33615d12A12f58b25c653dc5E44188D44f6898'
+      let address = results[0]
+      messageText = messageText.replace(address, '');
 
-      sendXMTP(wallet, address, messageText)
+      if (!isEthereumAddress(address)) {
+        console.log(`lookin up addr for ${address}`)
+        address = await getWalletAddress(address)
+      }
+      address = ethers.utils.getAddress(address)
+
+      console.log(`
+        chatId: ${chatId}
+        tg: ${tg}
+        Wallet: ${wallet.address}
+        address: ${address}
+        message: ${messageText}
+      `)
+
       sendPush(wallet, address, messageText)
-
+      var error = await sendXMTP(wallet, address, messageText)
+      if(error){
+        throw(error)
+      }
+      
     } catch(e ) {
       console.log(e)
+      bot.sendMessage(chatId, e);
     }
   });
 
@@ -231,6 +304,7 @@ async function spinUpXmtp(tg) {
 }
 
 async function listenToXmtpMessages(tg) {
+  console.log(`listening to xmtp msgs for ${tg}...`)
   const chatId = await getChatIdByUsername(tg)
   const wallet = genWallet(tg);
   const xmtp = await Client.create(wallet, { env: "production" });
@@ -240,12 +314,19 @@ async function listenToXmtpMessages(tg) {
       // This message was sent from me
       continue;
     }
-    console.log(`New message from ${message.senderAddress}: ${message.content}`);
+
+    console.log(`
+      XTMP => 
+      message.senderAddress: ${message.senderAddress}      
+      xmtp.address : ${xmtp.address}
+      message.content: ${message.content}
+    `)
+
 
     const botToken = process.env.YOUR_TELEGRAM_API_TOKEN;
     const bot = new TelegramBot(botToken, { polling: false });
 
-    console.log(`chatId: ${chatId}; msg: ${message.content}`)
+    // console.log(`chatId: ${chatId}; msg: ${message.content}`)
     bot.sendMessage(chatId, message.content);
 
   }
@@ -254,7 +335,7 @@ async function listenToXmtpMessages(tg) {
 async function main() { 
   await createTable();
   // Main process code
-  console.log(`Main process started.`);
+  console.log(`YOLO! Main process started.`);
   initBot();
   console.log('bot is live')
 
