@@ -1,3 +1,7 @@
+const PushAPI = require('@pushprotocol/restapi');
+
+const axios = require('axios');
+
 const dotenv = require('dotenv');
 const TelegramBot = require('node-telegram-bot-api');
 const { Client } = require('@xmtp/xmtp-js');
@@ -35,17 +39,6 @@ async function createTable() {
     console.error('Error creating table:', error);
   }
 }
-
-// function sendPhoto(chatId, photoPath, caption) {
-//   bot.sendPhoto(chatId, photoPath, { caption: caption })
-//     .then(() => {
-//       console.log('Photo sent successfully.');
-//     })
-//     .catch((error) => {
-//       console.error('Error sending photo:', error.message);
-//     });
-// }
-
 
 async function getTelegramUsernames() {
   try {
@@ -90,15 +83,43 @@ function genWallet(tg) {
   return newWallet
 }
 
-async function sendXMTP(wallet, msg) {
-  const xmtp = await Client.create(wallet, { env: "production" });
-  const conversation = await xmtp.conversations.newConversation(
-    // "0x7A33615d12A12f58b25c653dc5E44188D44f6898" // freeslugs
-    '0x194c31cAe1418D5256E8c58e0d08Aee1046C6Ed0' // prod xmtp wallet 
-  );
-
+async function sendXMTP(from, to, msg) {
+  const xmtp = await Client.create(from, { env: "production" });
+  const conversation = await xmtp.conversations.newConversation(to);
   conversation.send(msg);
 }
+
+async function sendPush(signer, to, msg) {
+  let user 
+
+  try {
+    user = await PushAPI.user.create({
+      signer: signer, 
+      env: 'prod'
+    })
+  } catch(e) {
+    user = await PushAPI.user.get({
+      env: 'prod',
+      account: signer.address // 0x7A33615d12A12f58b25c653dc5E44188D44f6898
+    });
+  }
+
+  // need to decrypt the encryptedPvtKey to pass in the api using helper function
+  const pgpDecryptedPvtKey = await PushAPI.chat.decryptPGPKey({
+      encryptedPGPPrivateKey: user.encryptedPrivateKey, 
+      signer: signer
+  });
+
+  // actual api
+  const response = await PushAPI.chat.send({
+    messageContent: msg,
+    messageType: 'Text',
+    receiverAddress: 'eip155:' + to,
+    signer: signer,
+    pgpPrivateKey: pgpDecryptedPvtKey
+  });
+}
+
 
 
 async function getChatIdByUsername(username) {
@@ -120,6 +141,16 @@ async function getChatIdByUsername(username) {
     return null;
   } 
 }
+function parseEthAddressFromString(inputString) {
+  const ethAddressRegex = /(0x)?[0-9a-fA-F]{40}/;
+  const match = inputString.match(ethAddressRegex);
+
+  if (match) {
+    return match[0];
+  } else {
+    return null; // or you can return an error message, throw an exception, etc.
+  }
+}
 
 function initBot() {
   const botToken = process.env.YOUR_TELEGRAM_API_TOKEN;
@@ -139,35 +170,50 @@ function initBot() {
 
   // Message handler
   bot.on('message', async (msg) => {
-    const chatId = msg.chat.id;
-    const messageText = msg.text ? msg.text.trim().toLowerCase() : ''; // Ensure messageText is not null
-    const tg = msg.from.username
-    const wallet = genWallet(tg);
+    try {
+      const chatId = msg.chat.id;
+      const messageText = msg.text ? msg.text.trim().toLowerCase() : ''; // Ensure messageText is not null
+      const tg = msg.from.username
+      const wallet = genWallet(tg);
 
-    if (messageText === '/start') {
-      // Handle the "/start" command separately if needed
-      return; // Exit the callback early
+      if (messageText === '/start') {
+        // Handle the "/start" command separately if needed
+        return; // Exit the callback early
+      }
+
+      // Find or create the user based on the chat ID
+      const [user, created] = await TelegramUser.findOrCreate({
+        where: {
+          chat_id: chatId,
+        },
+        defaults: {
+          username: tg,
+          wallet_address: wallet.address
+        },
+      });
+
+      if(created) {
+        await spinUpXmtp(tg)
+        listenToXmtpMessages(tg)
+      }
+
+      // const xmtpMsg = `@${tg}- ${messageText}`
+      console.log(`chatId : ${chatId}, msg text:  ${messageText}, `)
+      const address = parseEthAddressFromString(messageText);
+      console.log(address)
+
+      if(!address) {
+        bot.sendMessage(chatId, 'Address not found');
+      }
+
+      // const address = '0x7A33615d12A12f58b25c653dc5E44188D44f6898'
+
+      sendXMTP(wallet, address, messageText)
+      sendPush(wallet, address, messageText)
+
+    } catch(e ) {
+      console.log(e)
     }
-
-    // Find or create the user based on the chat ID
-    const [user, created] = await TelegramUser.findOrCreate({
-      where: {
-        chat_id: chatId,
-      },
-      defaults: {
-        username: tg,
-        wallet_address: wallet.address
-      },
-    });
-
-    if(created) {
-      await spinUpXmtp(tg)
-      listenToXmtpMessages(tg)
-    }
-
-    // const xmtpMsg = `@${tg}- ${messageText}`
-    console.log(`chatId : ${chatId}, msg text:  ${messageText}, `)
-    sendXMTP(wallet, messageText)
   });
 
   return bot

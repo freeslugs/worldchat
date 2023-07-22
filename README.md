@@ -7,6 +7,10 @@ fly deploy . -a xmtpizza
 flyctl scale count 1 -a xmtpizza
 ```
 
+```
+flyctl scale count 0 -a xmtpizza
+```
+
 https://github.com/celo-org/celo-monorepo/blob/master/packages/protocol/contracts/identity/FederatedAttestations.sol
 
 https://xmtp.org/blog/attachments-and-remote-attachments
