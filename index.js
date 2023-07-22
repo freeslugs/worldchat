@@ -92,17 +92,26 @@ async function sendXMTP(wallet, msg) {
   conversation.send(msg);
 }
 
-const goodsList = [
-  "toothpaste",
-  "toothbrush",
-  "tic tacs",
-  "hollywood gum",
-  "deodorant",
-  "carambar",
-  "potato chips",
-  "xmtp swag",
-  "red bull"
-];
+
+async function getChatIdByUsername(username) {
+  try {
+    // Connect to the database
+    await sequelize.authenticate();
+
+    // Find the user with the provided username
+    const user = await TelegramUser.findOne({
+      where: {
+        username: username,
+      },
+    });
+
+    // If the user exists, return the chat ID; otherwise, return null
+    return user ? user.chat_id : null;
+  } catch (error) {
+    console.error('Error fetching chat ID from the database:', error);
+    return null;
+  } 
+}
 
 function initBot() {
   // Replace 'YOUR_TELEGRAM_API_TOKEN' with the token obtained from BotFather
@@ -114,7 +123,7 @@ function initBot() {
   // Message handler
   bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
-    const messageText = msg.text.trim().toLowerCase();
+    const messageText = msg.text ? msg.text.trim().toLowerCase() : ''; // Ensure messageText is not null
     const tg = msg.from.username
     const wallet = genWallet(tg);
 
@@ -130,21 +139,30 @@ function initBot() {
     });
 
     if(created) {
-      // spin up a thread! 
+      await spinUpXmtp(tg)
       listenToXmtpMessages(tg)
     }
 
     // const xmtpMsg = `@${tg}- ${messageText}`
+    console.log(`chatId : ${chatId}, msg text:  ${messageText}, `)
     sendXMTP(wallet, messageText)
   });
 
   return bot
 }
 
-// Replace this with the actual implementation of the method you want to run in each child process
-async function listenToXmtpMessages(tg) {
+
+
+async function spinUpXmtp(tg) {
   console.log(`listening to XMTP messages for ${tg}`);
   // Your implementation to listen for XMTP messages goes here
+  const wallet = genWallet(tg);
+  const xmtp = await Client.create(wallet, { env: "production" });
+  return xmtp
+}
+
+async function listenToXmtpMessages(tg) {
+  const chatId = await getChatIdByUsername(tg)
   const wallet = genWallet(tg);
   const xmtp = await Client.create(wallet, { env: "production" });
 
@@ -156,8 +174,10 @@ async function listenToXmtpMessages(tg) {
     console.log(`New message from ${message.senderAddress}: ${message.content}`);
 
     const botToken = process.env.YOUR_TELEGRAM_API_TOKEN;
-    const bot = new TelegramBot(botToken, { polling: false });
-    bot.sendMessage(1263350425, message.content);
+    const bot = new TelegramBot(botToken, { polling: true });
+
+    console.log(`chatId: ${chatId}; msg: ${message.content}`)
+    bot.sendMessage(chatId, message.content);
 
   }
 }

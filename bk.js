@@ -237,3 +237,16 @@ if (messageText === "") {
     bot.sendMessage(chatId, goodsMessage);
   }
 }
+
+
+const goodsList = [
+  "toothpaste",
+  "toothbrush",
+  "tic tacs",
+  "hollywood gum",
+  "deodorant",
+  "carambar",
+  "potato chips",
+  "xmtp swag",
+  "red bull"
+];
