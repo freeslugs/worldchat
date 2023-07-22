@@ -7,17 +7,58 @@ const { ethers } = require('ethers');
 
 dotenv.config();
 
-const usernames = [
-  'freeslugs'
-]
+const { Sequelize, DataTypes } = require('sequelize');
 
+const connectionString = process.env.DATABASE_URL;
+const sequelize = new Sequelize(connectionString, {
+  dialect: 'postgres',
+});
+
+const TelegramUser = sequelize.define('telegram_user', {
+  username: {
+    type: DataTypes.TEXT,
+    allowNull: true,
+  },
+  chat_id: {
+    type: DataTypes.BIGINT,
+    allowNull: true,
+  },
+  wallet_address: {
+    type: DataTypes.TEXT,
+    allowNull: true,
+  },
+});
+
+async function createTable() {
+  try {
+    await sequelize.sync();
+    console.log('Table "telegram_users" has been created successfully.');
+  } catch (error) {
+    console.error('Error creating table:', error);
+  }
+}
+
+async function getTelegramUsernames() {
+  try {
+    await sequelize.authenticate();
+    const users = await TelegramUser.findAll({
+      attributes: ['username'], 
+    });
+
+    // Extract the usernames from the users array and store them in a new array
+    const usernames = users.map((user) => user.username);
+    console.log('Usernames:', usernames);
+    return usernames;
+  } catch (error) {
+    console.error('Error fetching usernames:', error);
+  } 
+}
 
 function stringToHex(inputString) {
   const utf8Bytes = ethers.utils.toUtf8Bytes(inputString);
   const hexString = ethers.utils.hexlify(utf8Bytes);
   return hexString;
 }
-
 
 function genWallet(tg) {
   // Validate mnemonic and username
@@ -43,7 +84,8 @@ function genWallet(tg) {
 async function sendXMTP(wallet, msg) {
   const xmtp = await Client.create(wallet, { env: "production" });
   const conversation = await xmtp.conversations.newConversation(
-    "0x7A33615d12A12f58b25c653dc5E44188D44f6898"
+    // "0x7A33615d12A12f58b25c653dc5E44188D44f6898" // freeslugs
+    '0x194c31cAe1418D5256E8c58e0d08Aee1046C6Ed0' // prod xmtp wallet 
   );
 
   // Send the goods to XMTP
@@ -72,33 +114,28 @@ function initBot() {
   // Message handler
   bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
-    console.log('ok', chatId)
     const messageText = msg.text.trim().toLowerCase();
     const tg = msg.from.username
-
-    // if (messageText === "") {
-    //   // If the user doesn't specify what goods they want, show them the list and ask to pick
-    //   const goodsMessage = "Available goods:\n\n" + goodsList.join("\n");
-    //   bot.sendMessage(chatId, goodsMessage);
-    // } else {
-    //   // If the user provided a specific item from the list, send it to XMTP
-    //   if (goodsList.includes(messageText)) {
-    //     // Create a wallet to send the goods to XMTP
-    //     const wallet = genWallet(tg);
-    //     const xmtpMsg = `@${tg} asked - ${messageText}`
-    //     sendXMTP(wallet, xmtpMsg)
-
-    //     bot.sendMessage(chatId, 'Dope, I notified the XMTP team');
-
-    //   } else {
-    //     // Respond with the list and ask to pick if the user provided an unknown item
-    //     const goodsMessage = "What do you want? Here's what we have in stock:\n\n" + goodsList.join("\n");
-    //     bot.sendMessage(chatId, goodsMessage);
-    //   }
-    // }
     const wallet = genWallet(tg);
-    const xmtpMsg = `@${tg}- ${messageText}`
-    sendXMTP(wallet, xmtpMsg)
+
+    // Find or create the user based on the chat ID
+    const [user, created] = await TelegramUser.findOrCreate({
+      where: {
+        chat_id: chatId,
+      },
+      defaults: {
+        username: tg,
+        wallet_address: wallet.address
+      },
+    });
+
+    if(created) {
+      // spin up a thread! 
+      listenToXmtpMessages(tg)
+    }
+
+    // const xmtpMsg = `@${tg}- ${messageText}`
+    sendXMTP(wallet, messageText)
   });
 
   return bot
@@ -106,7 +143,7 @@ function initBot() {
 
 // Replace this with the actual implementation of the method you want to run in each child process
 async function listenToXmtpMessages(tg) {
-  console.log(`Child process ${process.env.THREAD_INDEX} listening to XMTP messages for ${tg}`);
+  console.log(`listening to XMTP messages for ${tg}`);
   // Your implementation to listen for XMTP messages goes here
   const wallet = genWallet(tg);
   const xmtp = await Client.create(wallet, { env: "production" });
@@ -118,25 +155,6 @@ async function listenToXmtpMessages(tg) {
     }
     console.log(`New message from ${message.senderAddress}: ${message.content}`);
 
-    // find wallet for it! 
-    // and send it back!! 
-    // usernames.map(u => genWallet(u)).filter(u => u.address == message.senderAddress)[0]
-    // let myUsername;
-    // for (var i = 0; i < usernames.length; i++) {
-    //   let username = usernames[i]
-    //   console.log('searching...')
-    //   console.log(username)
-    //   const myWallet = genWallet(username)
-    //   if(myWallet.address == message.senderAddress) {
-    //     console.log(`found me = wallet: ${myWallet}; username ; ${username}`)
-    //     myUsername = username
-    //     break;
-    //   }
-    // }
-    // console.log('foudn me ' + myUsername)
-
-    // console.log(`tg: ${tg}`)
-    // bot.sendMessage(tg, message.content);
     const botToken = process.env.YOUR_TELEGRAM_API_TOKEN;
     const bot = new TelegramBot(botToken, { polling: false });
     bot.sendMessage(1263350425, message.content);
@@ -144,51 +162,14 @@ async function listenToXmtpMessages(tg) {
   }
 }
 
-// const { fork } = require('child_process');
-
-// const NUM_PROCESSES = 4; // Number of child processes to spawn
-
-// Array to store references to child processes
-// let childProcesses = [];
-
-// // Function to gracefully terminate all child processes
-// const shutdownChildProcesses = () => {
-//   for (const childProcess of childProcesses) {
-//     childProcess.send('shutdown');
-//   }
-// };
-
-// // Register the shutdown event listener
-// process.on('SIGINT', () => {
-//   console.log('Shutting down the application gracefully...');
-//   shutdownChildProcesses();
-// });
-
-// Function to create a new child process
-// const createChildProcess = (processIndex, functionName, params) => {
-//   const child = fork(__filename, [functionName, ...params], {
-//     env: { THREAD_INDEX: processIndex },
-//   });
-
-//   child.on('message', (message) => {
-//     if (message === 'shutdown') {
-//       console.log(`Child process ${processIndex} shutting down...`);
-//       process.exit(0);
-//     }
-//   });
-
-//   childProcesses.push(child);
-// };
-
-
 async function main() { 
+  await createTable();
   // Main process code
-  // if (!process.env.THREAD_INDEX) {
-  // This block will be executed only in the main process
   console.log(`Main process started.`);
   initBot();
   console.log('bot is live')
 
+  const usernames = await getTelegramUsernames()
 
   for (var i = 0; i < usernames.length; i++) {
     listenToXmtpMessages(usernames[i])
