@@ -157,6 +157,7 @@ async function spinUpXmtp(tg) {
   console.log(`listening to XMTP messages for ${tg}`);
   // Your implementation to listen for XMTP messages goes here
   const wallet = genWallet(tg);
+  console.log(`wallet: ${wallet.address}, ${wallet.privateKey}`)
   const xmtp = await Client.create(wallet, { env: "production" });
   return xmtp
 }
