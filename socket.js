@@ -209,6 +209,10 @@ async function listenToPush(tg) {
         // Extract the ETH addresses from fromDID and toDID
         const fromEthAddress = obj.fromDID.split(':').pop();
         const toEthAddress = obj.toDID.split(':').pop();
+        const botToken = process.env.YOUR_TELEGRAM_API_TOKEN;
+
+        // Create a new bot instance
+        const bot = new TelegramBot(botToken, { polling: false });
 
         bot.sendMessage(chatId, obj.messageContent);
       }
