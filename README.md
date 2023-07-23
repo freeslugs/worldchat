@@ -1,5 +1,7 @@
 # World Chat - Telegram Messaging Bot
 
+demo: https://youtu.be/cd6jStNlbf8
+
 World Chat is an evolved version of XMTPizza, a Telegram bot that enables users to send and receive messages using both the XMTP and Push protocols. This project started as XMTPizza, a bot specifically designed to communicate with the XMTP team through XMTP messages. Over time, it evolved into World Chat, offering a broader feature set and capabilities to facilitate seamless messaging between users on various platforms.
 
 ## Features
